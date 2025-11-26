@@ -1,6 +1,5 @@
-#include "logserver.h"
+#include "logserver.hpp"
 
-#include <iostream>
 #include <string>
 
 LogServer::LogServer(std::string url, int port) : url(url), port(port) {

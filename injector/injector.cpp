@@ -79,7 +79,7 @@ static inline void add_event(const std::string& operation,
                              const std::string& ts,
                              const std::string& event_json) {
     pthread_mutex_lock(&events_mutex);
-    aggregated_events_json += R"({"eventHeader":{"operation":")" + operation
+    aggregated_events_json += R"({"event_header":{"operation":")" + operation
                               + R"(","ts":)" + ts + R"(},"event_data":)"
                               + event_json + "}\n";
     pthread_mutex_unlock(&events_mutex);

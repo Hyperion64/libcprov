@@ -3,6 +3,7 @@ project(libcprov_receiver)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(SQLite3 REQUIRED)
 
@@ -21,6 +22,7 @@ FetchContent_MakeAvailable(httplib)
 add_executable(libcprov_receiver
     src/main.cpp
     src/logserver.cpp
+    src/parser.cpp
 )
 
 target_include_directories(libcprov_receiver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
