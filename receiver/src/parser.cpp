@@ -80,37 +80,48 @@ static SysOp sysop_from(std::string_view t) {
     return O::Unknown;
 }
 
-std::vector<Event> parse_events(ondemand::object& payload) {
-    std::vector<Event> processedEvents;
+std::queue<Event> parse_events(ondemand::object& payload) {
+    std::queue<Event> processedEvents;
     ondemand::array events
         = payload.find_field_unordered("events").get_array().value();
     for (ondemand::value event_val : events) {
-        auto event_obj = event_val.get_object().value();
+        auto event_obj_res = event_val.get_object();
+        if (event_obj_res.error()) continue;
+        auto event_obj = event_obj_res.value();
+
+        auto hdr_res
+            = event_obj.find_field_unordered("event_header").get_object();
+        if (hdr_res.error()) continue;
+        auto hdr = hdr_res.value();
+
+        uint64_t ts = get_uint64(hdr, "ts");
+        std::string op = get_string(hdr, "operation");
+        uint64_t pid = get_uint64(hdr, "pid");
+
+        ondemand::object event_data{};
+        if (auto dr = event_obj.find_field_unordered("event_data").get_object();
+            !dr.error()) {
+            event_data = dr.value();
+        }
+
         Event new_event;
-        ondemand::object event_header
-            = event_obj.find_field_unordered("event_header")
-                  .get_object()
-                  .value();
-        ondemand::object event_data
-            = event_obj.find_field_unordered("event_data").get_object().value();
-        new_event.ts = get_uint64(event_header, "ts");
-        std::string operation = get_string(event_header, "operation");
-        SysOp current_sysop = sysop_from(operation);
-        new_event.operation = current_sysop;
+        new_event.ts = ts;
+        new_event.pid = pid;
+        new_event.operation = sysop_from(op);
         using O = SysOp;
-        switch (current_sysop) {
+        switch (sysop_from(op)) {
             case O::ProcessStart:
-                new_event.payload
+                new_event.event_payload
                     = ProcessStart{.ppid = get_uint64(event_data, "ppid")};
                 break;
             case O::ProcessEnd:
-                new_event.payload = ProcessEnd{};
+                new_event.event_payload = ProcessEnd{};
                 break;
             case O::Read:
             case O::Readv:
             case O::Pread:
             case O::Preadv:
-                new_event.payload
+                new_event.event_payload
                     = AccessIn{.path_in = get_string(event_data, "path_in")};
                 break;
             case O::Write:
@@ -119,53 +130,52 @@ std::vector<Event> parse_events(ondemand::object& payload) {
             case O::Pwritev:
             case O::Truncate:
             case O::Fallocate:
-                new_event.payload
+                new_event.event_payload
                     = AccessOut{.path_out = get_string(event_data, "path_out")};
                 break;
             case O::Transfer:
             case O::Rename:
             case O::Link:
             case O::SymLink:
-                new_event.payload = AccessInOut{
+                new_event.event_payload = AccessInOut{
                     .path_in = get_string(event_data, "path_in"),
                     .path_out = get_string(event_data, "path_out")};
                 break;
             case O::Exec:
             case O::System:
-                new_event.payload
+                new_event.event_payload
                     = ExecCall{.target = get_string(event_data, "path")};
                 break;
             case O::Spawn:
-                new_event.payload = SpawnCall{
+                new_event.event_payload = SpawnCall{
                     .child_pid = get_uint64(event_data, "child_pid"),
                     .target = get_string(event_data, "path")};
                 break;
             case O::Fork:
-                new_event.payload = ForkCall{
+                new_event.event_payload = ForkCall{
                     .child_pid = get_uint64(event_data, "child_pid")};
                 break;
         }
-        processedEvents.push_back(new_event);
+        processedEvents.push(new_event);
     }
     return processedEvents;
 }
 
-ParsedBatch parse_batch(const std::string& json_body) {
-    ParsedBatch new_batch;
+ParsedRequest parse_request(const std::string& json_body) {
+    ParsedRequest new_request;
     ondemand::parser parser;
     padded_string p(json_body);
     auto doc = parser.iterate(p);
     auto env = doc.get_object().value();
     auto hdr = env.find_field_unordered("header").get_object().value();
     std::string type = get_string(hdr, "type");
-    new_batch.type = get_call_type(type);
-    new_batch.pid = get_uint64(hdr, "pid");
-    new_batch.job_id = get_string(hdr, "job_id");
-    new_batch.cluster_name = get_string(hdr, "cluster_name");
+    new_request.type = get_call_type(type);
+    new_request.job_id = get_string(hdr, "slurm_job_id");
+    new_request.cluster_name = get_string(hdr, "slurm_cluster_name");
     auto payload = env.find_field_unordered("payload").get_object().value();
-    new_batch.path = get_string(payload, "path");
-    if (type == "exec") {
-        new_batch.events = parse_events(payload);
+    new_request.path = get_string(payload, "path");
+    if (new_request.type == CallType::Exec) {
+        new_request.request_payload = Exec{0, 0, parse_events(payload)};
     }
-    return new_batch;
+    return new_request;
 }

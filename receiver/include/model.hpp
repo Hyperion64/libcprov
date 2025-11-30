@@ -1,8 +1,11 @@
 #pragma once
 #include <cstdint>
+#include <mutex>
+#include <queue>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <variant>
-#include <vector>
 
 enum class SysOp {
     Write,
@@ -87,16 +90,71 @@ using EventPayload
 struct Event {
     uint64_t ts = 0;
     SysOp operation = SysOp::Unknown;
-    EventPayload payload;
+    uint64_t pid = 0;
+    EventPayload event_payload;
 };
 
 enum class CallType { Start, End, Exec };
 
-struct ParsedBatch {
+struct StartOrEnd {
+    uint64_t ts = 0;
+};
+
+struct Exec {
+    uint64_t start_time = 0;
+    uint64_t end_time = 0;
+    std::queue<Event> events;
+};
+
+using RequestPayload = std::variant<StartOrEnd, Exec>;
+
+struct ParsedRequest {
     CallType type;
-    uint64_t pid;
     std::string job_id;
     std::string cluster_name;
     std::string path;
-    std::vector<Event> events;
+    RequestPayload request_payload;
+};
+
+struct ParsedRequestQueue {
+    std::mutex queue_mutex;
+    std::queue<ParsedRequest> parsed_batch_queue;
+    void push(ParsedRequest batch) {
+        std::lock_guard<std::mutex> lock(queue_mutex);
+        parsed_batch_queue.push(std::move(batch));
+    }
+    std::queue<ParsedRequest> take_all() {
+        std::lock_guard<std::mutex> lock(queue_mutex);
+        std::queue<ParsedRequest> copy = std::move(parsed_batch_queue);
+        parsed_batch_queue = {};
+        return copy;
+    }
+};
+
+struct ProvData {
+    std::unordered_set<std::string> reads;
+    std::unordered_set<std::string> writes;
+    std::unordered_set<std::string> executes;
+};
+
+/*
+struct ExecProvData {
+    uint64_t start_time;
+    uint64_t end_time;
+    std::unordered_map<std::string, std::string> rename_map;
+    ProvData prov_data;
+};*/
+
+struct ProcessedJobData {
+    std::string job_id;
+    std::string cluster_name;
+    std::string job_name;
+    std::string nodelist;
+    std::string user;
+    std::string path;
+    uint64_t start_time;
+    uint64_t end_time;
+    ProvData global_prov_data;
+    std::unordered_map<std::string, std::string> global_rename_map;
+    // std::queue<ExecProvData> exec_prov_data_queue;
 };

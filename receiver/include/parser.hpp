@@ -3,4 +3,4 @@
 
 #include "model.hpp"
 
-ParsedBatch parse_batch(const std::string& json_body);
+ParsedRequest parse_request(const std::string& json_body);
