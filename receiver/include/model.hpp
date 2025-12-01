@@ -137,13 +137,23 @@ struct ProvData {
     std::unordered_set<std::string> executes;
 };
 
-/*
+struct ProcessProvData {
+    std::string node;
+    uint64_t ppid;
+    uint64_t start_time;
+    uint64_t end_time;
+    // ProvData prov_data;
+};
+
 struct ExecProvData {
+    std::string step_name;
     uint64_t start_time;
     uint64_t end_time;
     std::unordered_map<std::string, std::string> rename_map;
+    std::unordered_map<std::string, std::string> symlink_map;
     ProvData prov_data;
-};*/
+    std::unordered_map<uint64_t, ProcessProvData> process_map;
+};
 
 struct ProcessedJobData {
     std::string job_id;
@@ -154,7 +164,7 @@ struct ProcessedJobData {
     std::string path;
     uint64_t start_time;
     uint64_t end_time;
-    ProvData global_prov_data;
-    std::unordered_map<std::string, std::string> global_rename_map;
-    // std::queue<ExecProvData> exec_prov_data_queue;
+    // ProvData global_prov_data;
+    // std::unordered_map<std::string, std::string> global_rename_map;
+    std::queue<ExecProvData> exec_prov_data_queue;
 };

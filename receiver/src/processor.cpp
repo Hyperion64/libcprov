@@ -21,6 +21,31 @@ void print_prov_data(const ProvData& pd) {
     print_set(pd.executes, "Executes");
 }
 
+void print_exec_data(const ExecProvData& exec) {
+    std::cout << "Exec Step Name: " << exec.step_name << "\n"
+              << "Start Time: " << exec.start_time << "\n"
+              << "End Time: " << exec.end_time << "\n";
+    print_prov_data(exec.prov_data);
+
+    if (!exec.rename_map.empty()) {
+        std::cout << "Rename Map: { ";
+        for (const auto& [k, v] : exec.rename_map) {
+            std::cout << k << "->" << v << " ";
+        }
+        std::cout << "}" << std::endl;
+    }
+
+    if (!exec.symlink_map.empty()) {
+        std::cout << "Symlink Map: { ";
+        for (const auto& [k, v] : exec.symlink_map) {
+            std::cout << k << "->" << v << " ";
+        }
+        std::cout << "}" << std::endl;
+    }
+
+    std::cout << "-------------------------------------" << std::endl;
+}
+
 void print_processed_job_data(const ProcessedJobData& job) {
     std::cout << "Job ID: " << job.job_id << "\n"
               << "Cluster: " << job.cluster_name << "\n"
@@ -29,38 +54,121 @@ void print_processed_job_data(const ProcessedJobData& job) {
               << "Start Time: " << job.start_time << "\n"
               << "End Time: " << job.end_time << "\n";
 
-    print_prov_data(job.global_prov_data);
+    std::queue<ExecProvData> exec_queue_copy = job.exec_prov_data_queue;
+    while (!exec_queue_copy.empty()) {
+        const ExecProvData& exec = exec_queue_copy.front();
+        print_exec_data(exec);
+        exec_queue_copy.pop();
+    }
 }
 
 //
 
-std::string getFilePath(
+struct RecordParameters {
+    // std::unordered_map<std::string, std::string> global_map;
+    std::unordered_map<std::string, std::string> exec_rename_map;
+    std::unordered_map<std::string, std::string> exec_symlink_map;
+    // ProvData& global;
+    ProvData& exec_prov_data;
+    // ProvData& proc;
+};
+
+void rename_writes(RecordParameters& record_parameters) {
+    std::unordered_set<std::string>& writes
+        = record_parameters.exec_prov_data.writes;
+    for (const std::pair<std::string, std::string>& kv :
+         record_parameters.exec_rename_map) {
+        const std::string& new_file_name = kv.first;
+        const std::string& original_file_name = kv.second;
+        std::unordered_set<std::string>::const_iterator it
+            = writes.find(original_file_name);
+        if (it != writes.end()) {
+            writes.erase(it);
+            writes.insert(new_file_name);
+        }
+    }
+}
+
+std::string resolve_path(
     const std::string& path,
-    const std::unordered_map<std::string, std::string>& rename_map) {
-    if (auto it = rename_map.find(path); it != rename_map.end()) {
-        return it->second;
+    const std::unordered_map<std::string, std::string>& rename_map,
+    const std::unordered_map<std::string, std::string>& symlink_map) {
+    auto it_rename = rename_map.find(path);
+    if (it_rename != rename_map.end()) {
+        return it_rename->second;
+    }
+    auto it_symlink = symlink_map.find(path);
+    if (it_symlink != symlink_map.end()) {
+        return it_symlink->second;
     }
     return path;
 }
 
+template <auto ProvData::* member>
+void record_path(const std::string& path, RecordParameters& record_parameters) {
+    // std::string global_op = resolve_path(path, record_parameters.global_map);
+    std::string exec_op = resolve_path(path, record_parameters.exec_rename_map,
+                                       record_parameters.exec_symlink_map);
+    //(record_parameters.global.*member).insert(global_op);
+    (record_parameters.exec_prov_data.*member).insert(exec_op);
+    //(record_parameters.proc.*member).insert(exec_op);
+}
+
+void record_write(const std::string& path,
+                  RecordParameters& record_parameters) {
+    record_path<&ProvData::writes>(path, record_parameters);
+}
+
+void record_read(const std::string& path, RecordParameters& record_parameters) {
+    record_path<&ProvData::reads>(path, record_parameters);
+}
+
+void record_exec(const std::string& path, RecordParameters& record_parameters) {
+    record_path<&ProvData::executes>(path, record_parameters);
+}
+
 void process_exec(const Exec& exec, ProcessedJobData& processed_job_data) {
-    std::unordered_map<std::string, std::string>& global_rename_map
-        = processed_job_data.global_rename_map;
-    std::unordered_set<std::string>& global_reads
-        = processed_job_data.global_prov_data.reads;
-    std::unordered_set<std::string>& global_writes
-        = processed_job_data.global_prov_data.writes;
-    std::unordered_set<std::string>& global_executes
-        = processed_job_data.global_prov_data.executes;
+    ExecProvData current_exec_prov_data;
+    // ProvData& global_prov_data = processed_job_data.global_prov_data;
+    ProvData& exec_prov_data = current_exec_prov_data.prov_data;
+    // std::unordered_map<std::string, std::string>& global_rename_map
+    //     = processed_job_data.global_rename_map;
+    std::unordered_map<std::string, std::string>& exec_rename_map
+        = current_exec_prov_data.rename_map;
+    std::unordered_map<std::string, std::string>& exec_symlink_map
+        = current_exec_prov_data.symlink_map;
     std::queue<Event> events = exec.events;
+    ProvData empty_proc;
+    RecordParameters record_parameters = {
+        //.global_map = global_rename_map,
+        .exec_rename_map = exec_rename_map,
+        .exec_symlink_map = exec_symlink_map,
+        //.global = global_prov_data,
+        .exec_prov_data = exec_prov_data,
+        //.proc = empty_proc
+    };
     while (!events.empty()) {
         Event event = events.front();
+        uint64_t event_pid = event.pid;
         SysOp op = event.operation;
         EventPayload event_payload = event.event_payload;
+        ProcessProvData& current_process_prov_data
+            = current_exec_prov_data.process_map[event_pid];
+        // record_parameters.proc = current_process_prov_data.prov_data;
         switch (op) {
-            case SysOp::ProcessStart:
-            case SysOp::ProcessEnd:
+            case SysOp::ProcessStart: {
+                ProcessStart process_start
+                    = std::get<ProcessStart>(event_payload);
+                uint64_t ppid = process_start.ppid;
+                current_process_prov_data.start_time = event.ts;
+                current_process_prov_data.ppid = ppid;
                 break;
+            }
+            case SysOp::ProcessEnd: {
+                current_process_prov_data.end_time = event.ts;
+                rename_writes(record_parameters);
+                break;
+            }
             case SysOp::Write:
             case SysOp::Writev:
             case SysOp::Pwrite:
@@ -68,91 +176,71 @@ void process_exec(const Exec& exec, ProcessedJobData& processed_job_data) {
             case SysOp::Truncate:
             case SysOp::Fallocate: {
                 AccessOut access_out = std::get<AccessOut>(event_payload);
-                std::string path_out
-                    = getFilePath(access_out.path_out, global_rename_map);
-                global_writes.insert(path_out);
+                std::string path_out = access_out.path_out;
+                record_write(path_out, record_parameters);
                 break;
             }
             case SysOp::Read:
             case SysOp::Readv:
             case SysOp::Pread:
             case SysOp::Preadv: {
-                const auto& access_in = std::get<AccessIn>(event_payload);
-                std::string path_in
-                    = getFilePath(access_in.path_in, global_rename_map);
-                global_reads.insert(path_in);
+                AccessIn access_in = std::get<AccessIn>(event_payload);
+                std::string path_in = access_in.path_in;
+                record_read(path_in, record_parameters);
                 break;
             }
             case SysOp::Transfer: {
-                const auto& access_in_out
+                AccessInOut access_in_out
                     = std::get<AccessInOut>(event_payload);
-                std::string path_out
-                    = getFilePath(access_in_out.path_out, global_rename_map);
-                global_writes.insert(path_out);
-                std::string path_in
-                    = getFilePath(access_in_out.path_in, global_rename_map);
-                global_reads.insert(path_in);
+                std::string path_out = access_in_out.path_out;
+                std::string path_in = access_in_out.path_in;
+                record_write(path_out, record_parameters);
+                record_read(path_in, record_parameters);
                 break;
             }
             case SysOp::Rename: {
                 const auto& access_in_out
                     = std::get<AccessInOut>(event_payload);
-                std::string path_out
-                    = getFilePath(access_in_out.path_out, global_rename_map);
-                std::string path_in
-                    = getFilePath(access_in_out.path_in, global_rename_map);
-                if (global_rename_map.find(path_in)
-                    == global_rename_map.end()) {
-                    global_rename_map[path_out] = path_in;
+                std::string path_out = access_in_out.path_out;
+                std::string path_in = access_in_out.path_in;
+                if (exec_rename_map.find(path_in) == exec_rename_map.end()) {
+                    exec_rename_map[path_out] = path_in;
+                    // record_rename(path_out, path_in, record_parameters);
                 } else {
-                    global_rename_map[path_out] = global_rename_map[path_in];
-                    global_rename_map.erase(path_in);
+                    exec_rename_map[path_out] = exec_rename_map[path_in];
+                    exec_rename_map.erase(path_in);
                 }
                 break;
             }
-            case SysOp::Link: {
-                const auto& access_in_out
-                    = std::get<AccessInOut>(event_payload);
-                std::string path_out
-                    = getFilePath(access_in_out.path_out, global_rename_map);
-                std::string path_in
-                    = getFilePath(access_in_out.path_in, global_rename_map);
-                global_rename_map[path_in] = path_out;
-                global_rename_map[path_out] = path_in;
-                global_writes.insert(path_out);
-                break;
-            }
+            case SysOp::Link:
             case SysOp::SymLink: {
                 const auto& access_in_out
                     = std::get<AccessInOut>(event_payload);
-                std::string path_out
-                    = getFilePath(access_in_out.path_out, global_rename_map);
-                std::string path_in
-                    = getFilePath(access_in_out.path_in, global_rename_map);
-                global_rename_map[path_out] = path_in;
-                global_writes.insert(path_out);
+                std::string path_out = access_in_out.path_out;
+                std::string path_in = access_in_out.path_in;
+                std::string resolved_path_in
+                    = resolve_path(path_in, exec_rename_map, exec_symlink_map);
+                exec_symlink_map[path_out] = resolved_path_in;
+                record_write(path_out, record_parameters);
                 break;
             }
             case SysOp::Unlink: {
                 const auto& access_out = std::get<AccessOut>(event_payload);
-                std::string path_out
-                    = getFilePath(access_out.path_out, global_rename_map);
-                global_rename_map.erase(path_out);
+                std::string path_out = access_out.path_out;
+                exec_symlink_map.erase(path_out);
                 break;
             }
             case SysOp::Exec:
             case SysOp::System: {
                 const auto& access_exec = std::get<ExecCall>(event_payload);
-                std::string path_exec
-                    = getFilePath(access_exec.target, global_rename_map);
-                global_executes.insert(path_exec);
+                std::string target = access_exec.target;
+                record_exec(target, record_parameters);
                 break;
             }
             case SysOp::Spawn: {
                 const auto& access_spawn = std::get<SpawnCall>(event_payload);
-                std::string path_spawn
-                    = getFilePath(access_spawn.target, global_rename_map);
-                global_executes.insert(path_spawn);
+                std::string target = access_spawn.target;
+                record_exec(target, record_parameters);
                 break;
             }
             case SysOp::Fork:
@@ -161,6 +249,7 @@ void process_exec(const Exec& exec, ProcessedJobData& processed_job_data) {
         }
         events.pop();
     }
+    processed_job_data.exec_prov_data_queue.push(current_exec_prov_data);
 }
 
 void process_parsed_requests(ParsedRequestQueue* parsed_request) {
